@@ -126,7 +126,7 @@ LGPL-3
 
 ## Autor
 
-Nakel
+s.paradiso92@gmail.com
 
 ## Versión
 
