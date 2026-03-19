@@ -19,7 +19,7 @@
         Requirements:
         - python-barcode[images] (pip install python-barcode[images])
     """,
-    'author': 'Nakel',
+    'author': 'FWCORP',
     'website': '',
     'depends': [
         'stock',

@@ -87,4 +87,4 @@ LGPL-3
 
 ## Autor
 
-Nakel
+**FWCORP** — [@intaky-dev](https://github.com/intaky-dev) · [@klap50](https://github.com/klap50)
