@@ -19,3 +19,8 @@ build/
 *.log
 .env
 .env.local
+
+# Scripts con credenciales (no subir)
+diagnosticar_bultos.py
+explorar_master18_bultos.py
+analizar_odoo18_api.py
