@@ -12,7 +12,25 @@
             <t t-call="web.html_container">
                 <t t-foreach="docs" t-as="batch">
                     <t t-call="web.external_layout">
-                        <div class="page">
+                        <style>
+                            /* Evitar que filas de tabla se corten entre páginas en PDF (wkhtmltopdf) */
+                            .nakel-batch-report tbody tr { page-break-inside: avoid; break-inside: avoid; }
+                            .nakel-batch-report thead { display: table-header-group; }
+                            /* Secciones de ruta: evita encabezado huérfano (header sin filas al final de página) */
+                            .nakel-route-section { page-break-inside: avoid; }
+                        </style>
+                        <div class="page nakel-batch-report">
+                            <!-- Logo y nombre empresa (primera hoja) -->
+                            <div class="row mb-3" style="border-bottom: 1px solid #ddd; padding-bottom: 12px;">
+                                <div class="col-8">
+                                    <t t-set="company" t-value="batch.company_id or (batch.picking_ids[:1].company_id if batch.picking_ids else None)"/>
+                                    <t t-if="company and company.logo">
+                                        <img t-att-src="image_data_uri(company.logo)" style="max-height: 55px; vertical-align: middle;" alt="Logo"/>
+                                    </t>
+                                    <span t-if="company" t-esc="company.name" style="font-size: 1.3em; font-weight: bold; margin-left: 12px; vertical-align: middle;"/>
+                                </div>
+                                <div class="col-4 text-end"/>
+                            </div>
                             <!-- Header -->
                             <div class="row">
                                 <div class="col-8">
@@ -23,7 +41,7 @@
                                 </div>
                                 <div class="col-4 text-end">
                                     <t t-if="batch.name">
-                                        <img t-att-src="batch._generate_barcode_image(batch.name, 'Code128', 600, 100)" style="width:100%;height:40px" alt="Barcode"/>
+                                        <img t-att-src="batch._generate_barcode_image(batch.name, 'Code128', 400, 60)" style="max-width:100%;height:40px;object-fit:contain;" alt="Barcode"/>
                                     </t>
                                 </div>
                             </div>
@@ -54,12 +72,12 @@
                                 </thead>
                                 <tbody>
                                     <t t-foreach="batch.picking_ids" t-as="picking">
-                                        <tr>
-                                            <td><span t-esc="picking_index"/></td>
+                                        <tr style="page-break-inside: avoid;">
+                                            <td><span t-esc="picking_index + 1"/></td>
                                             <td><span t-field="picking.name"/></td>
                                             <td>
                                                 <t t-if="picking.name">
-                                                    <img t-att-src="batch._generate_barcode_image(picking.name, 'Code128', 600, 100)" style="width:100%;height:30px" alt="Barcode"/>
+                                                    <img t-att-src="batch._generate_barcode_image(picking.name, 'Code128', 400, 60)" style="max-width:100%;height:35px;object-fit:contain;" alt="Barcode"/>
                                                 </t>
                                             </td>
                                             <td><span t-field="picking.state"/></td>
@@ -88,27 +106,27 @@
                                 <t t-set="route_label" t-value="route_item[0]"/>
                                 <t t-set="route_lines" t-value="route_item[1]"/>
 
-                                <div class="mt-4" style="background-color: #e9ecef; padding: 8px; margin-bottom: 10px;">
-                                    <strong style="white-space: pre-line;" t-esc="route_label"/>
-                                </div>
+                                <!-- Wrapper para evitar encabezado huérfano: si no cabe header+tabla, toda la sección pasa a la siguiente página -->
+                                <div class="mt-4 nakel-route-section" style="page-break-inside: avoid;">
+                                    <div style="background-color: #e9ecef; padding: 8px; margin-bottom: 10px;">
+                                        <strong style="white-space: pre-line;" t-esc="route_label"/>
+                                    </div>
 
-                                <table class="table table-sm table-bordered">
+                                    <table class="table table-sm table-bordered">
                                     <thead style="background-color: #f8f9fa;">
                                         <tr>
                                             <th style="width: 35%;">Producto</th>
                                             <th style="width: 15%;">Cantidad</th>
                                             <th style="width: 20%;">Trasladar</th>
-                                            <th style="width: 30%;">Código de barras del producto</th>
-                                            <th style="width: 15%;">Paquete</th>
+                                            <th style="width: 12%;">Codigo Prod.</th>
+                                            <th style="width: 18%;">BULTO</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         <t t-foreach="route_lines" t-as="line">
-                                            <tr>
+                                            <tr style="page-break-inside: avoid;">
                                                 <td>
-                                                    <t t-if="line['product_code']">
-                                                        <span t-esc="'[%s] ' % line['product_code']"/>
-                                                    </t>
+                                                    <!-- product_name (display_name) ya incluye el código interno una vez -->
                                                     <span t-esc="line['product_name']"/>
                                                 </td>
                                                 <td class="text-center">
@@ -120,30 +138,36 @@
                                                 </td>
                                                 <td class="text-center">
                                                     <t t-if="line['product'].barcode">
-                                                        <img t-att-src="batch._generate_barcode_image(line['product'].barcode, 'Code128', 600, 100)" style="width:100%;height:30px" alt="Product Barcode"/>
+                                                        <img t-att-src="batch._generate_barcode_image(line['product'].barcode, 'Code128', 400, 60)" style="max-width:100%;height:35px;object-fit:contain;" alt="Product Barcode"/>
                                                     </t>
                                                     <t t-else="">
                                                         <span style="color: #999;">-</span>
                                                     </t>
                                                 </td>
                                                 <td class="text-center">
-                                                    <t t-if="line['package_name'] or line['result_package_name']">
-                                                        <t t-if="line['package_name']">
-                                                            <span t-esc="line['package_name']"/>
-                                                        </t>
-                                                        <t t-if="line['result_package_name'] and line['result_package_name'] != line['package_name']">
-                                                            <span t-if="line['package_name']"><br/></span>
-                                                            <span>→ <span t-esc="line['result_package_name']"/></span>
-                                                        </t>
+                                                    <!-- BULTO: cuántas cajas/bultos tomar (ej. "1.5 Bulto x40") - recolector agarra cajas cerradas -->
+                                                    <t t-set="bulto_name" t-value="line.get('bulto_name', '')"/>
+                                                    <t t-set="bulto_qty" t-value="line.get('bulto_qty', 0)"/>
+                                                    <t t-if="bulto_qty and bulto_name">
+                                                        <strong t-esc="'%.2f' % bulto_qty"/>
+                                                        <span t-esc="' %s' % bulto_name"/>
+                                                    </t>
+                                                    <t t-elif="bulto_qty">
+                                                        <strong t-esc="'%.2f' % bulto_qty"/>
+                                                        <span t-esc="' %s' % (bulto_name or 'bultos')"/>
+                                                    </t>
+                                                    <t t-elif="bulto_name">
+                                                        <span t-esc="bulto_name"/>
                                                     </t>
                                                     <t t-else="">
-                                                        <span>→ <span t-esc="line['result_package_name'] or 'PACK0000002'"/></span>
+                                                        <span style="color: #999;">-</span>
                                                     </t>
                                                 </td>
                                             </tr>
                                         </t>
                                     </tbody>
                                 </table>
+                                </div>
                             </t>
 
                         </div>
