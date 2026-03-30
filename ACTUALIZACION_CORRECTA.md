@@ -39,7 +39,7 @@ sudo systemctl start odoo
 
 ```bash
 # 1. Desplegar (copiar archivos)
-cd inventario/nakel_picking
+cd /ruta/al/nakel_picking   # ej. vault: nakel/nakel_picking (raíz del addon, donde está deploy.sh)
 ./deploy.sh odoo-ct-nakel
 
 # 2. Actualizar en el servidor (todo en uno)

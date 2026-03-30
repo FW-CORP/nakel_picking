@@ -119,7 +119,7 @@
                                             <th style="width: 15%;">Cantidad</th>
                                             <th style="width: 20%;">Trasladar</th>
                                             <th style="width: 12%;">Codigo Prod.</th>
-                                            <th style="width: 18%;">BULTO</th>
+                                            <th style="width: 18%;">TOTAL</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -145,23 +145,9 @@
                                                     </t>
                                                 </td>
                                                 <td class="text-center">
-                                                    <!-- BULTO: cuántas cajas/bultos tomar (ej. "1.5 Bulto x40") - recolector agarra cajas cerradas -->
-                                                    <t t-set="bulto_name" t-value="line.get('bulto_name', '')"/>
-                                                    <t t-set="bulto_qty" t-value="line.get('bulto_qty', 0)"/>
-                                                    <t t-if="bulto_qty and bulto_name">
-                                                        <strong t-esc="'%.2f' % bulto_qty"/>
-                                                        <span t-esc="' %s' % bulto_name"/>
-                                                    </t>
-                                                    <t t-elif="bulto_qty">
-                                                        <strong t-esc="'%.2f' % bulto_qty"/>
-                                                        <span t-esc="' %s' % (bulto_name or 'bultos')"/>
-                                                    </t>
-                                                    <t t-elif="bulto_name">
-                                                        <span t-esc="bulto_name"/>
-                                                    </t>
-                                                    <t t-else="">
-                                                        <span style="color: #999;">-</span>
-                                                    </t>
+                                                    <!-- TOTAL: recalcula en Python (bultos + unidades); no depende de la clave total_display en el dict.
+                                                         Requiere que stock_picking_batch.py del módulo esté desplegado (mismo deploy que el XML). -->
+                                                    <span t-esc="batch._format_total_display_for_line(line)"/>
                                                 </td>
                                             </tr>
                                         </t>

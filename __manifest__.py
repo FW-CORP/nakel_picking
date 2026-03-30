@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Nakel Picking - Consolidated Batch Report',
-    'version': '18.0.1.9.0',
+    'version': '18.0.1.18.0',
     'category': 'Inventory/Inventory',
     'summary': 'Consolidated quantities in batch picking reports',
     'description': """

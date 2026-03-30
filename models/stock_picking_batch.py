@@ -4,10 +4,185 @@ from odoo import models, fields, api
 from collections import defaultdict
 import base64
 import io
+import math
 
 
 class StockPickingBatch(models.Model):
     _inherit = 'stock.picking.batch'
+
+    def _pretty_qty_for_display(self, n):
+        """Cantidad legible: entero sin .0; si no, hasta 4 decimales sin ceros finales."""
+        n = float(n)
+        if abs(n - round(n)) < 1e-6:
+            return str(int(round(n)))
+        s = f'{n:.4f}'.rstrip('0').rstrip('.')
+        return s
+
+    def _best_packaging_from_recordset(self, packaging_rs):
+        """
+        Elige embalaje: mayor qty (bulto típico), desempate por sequence menor.
+        Devuelve (unidades_por_bulto, registro product.packaging o None).
+        """
+        if not packaging_rs:
+            return 0.0, None
+        packs = sorted(
+            packaging_rs,
+            key=lambda p: ((p.qty or 0), -(getattr(p, 'sequence', None) or 0)),
+            reverse=True,
+        )
+        for p in packs:
+            q = p.qty or 0
+            if q > 0:
+                return float(q), p
+        return 0.0, None
+
+    def _best_packaging_for_product(self, product):
+        """
+        Embalaje para cálculo de bultos.
+
+        En Odoo 18, ``product.template.packaging_ids`` solo se rellena si la plantilla
+        tiene **una sola variante**; si hay varias, queda vacío aunque las variantes
+        tengan embalajes. Por eso se prioriza ``product.product.packaging_ids``.
+        """
+        if not product:
+            return 0.0, None
+        pq, pkg = self._best_packaging_from_recordset(product.packaging_ids)
+        if pq > 0:
+            return pq, pkg
+        pt = product.product_tmpl_id
+        if pt:
+            pq, pkg = self._best_packaging_from_recordset(pt.packaging_ids)
+            if pq > 0:
+                return pq, pkg
+        return 0.0, None
+
+    def _uom_largest_bulto_in_category(self, uom_category):
+        """
+        UdM de la misma categoría con mayor factor_inv (>1), típico 'bulto'.
+
+        No usar ``uom.uom.search()`` aquí: en Odoo 18 EE el modelo puede tener
+        ``_order`` con ``factor_inv`` (no almacenado) y el ORM revienta al armar SQL.
+        Se leen solo IDs por SQL y se hace ``browse`` + filtro en Python.
+        """
+        if not uom_category:
+            return self.env['uom.uom']
+        Uom = self.env['uom.uom']
+        self.env.cr.execute(
+            "SELECT id FROM uom_uom WHERE category_id = %s AND active",
+            (uom_category.id,),
+        )
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        if not ids:
+            return Uom
+        cands = Uom.browse(ids)
+        cands = cands.filtered(lambda u: (u.factor_inv or 0) > 1)
+        if not cands:
+            return Uom
+        return max(cands, key=lambda u: u.factor_inv or 0)
+
+    def _product_units_per_bulto_package(self, product):
+        """Unidades por bulto/embalaje (misma lógica que la consolidación) para texto TOTAL."""
+        if not product or not product.product_tmpl_id:
+            return 0.0
+        pq, _pkg = self._best_packaging_for_product(product)
+        if pq > 0:
+            return pq
+        pt = product.product_tmpl_id
+        if pt.uom_po_id and pt.uom_po_id != pt.uom_id:
+            fi = getattr(pt.uom_po_id, 'factor_inv', 0) or 0
+            if fi > 1:
+                return float(fi)
+        if pt.uom_id:
+            fi = getattr(pt.uom_id, 'factor_inv', 0) or 0
+            if fi > 1:
+                return float(fi)
+        if pt.uom_id and pt.uom_id.category_id:
+            bulto_uom_cat = self._uom_largest_bulto_in_category(pt.uom_id.category_id)
+            if bulto_uom_cat:
+                return float(bulto_uom_cat.factor_inv or 0)
+        return 0.0
+
+    def _format_bulto_uom_display(self, qty_bultos, label):
+        """Cuando la línea ya va en UdM bulto y no hay factor a unidades: bultos enteros + fracción."""
+        label = (label or '').strip() or 'bultos'
+        q = float(qty_bultos)
+        full = int(math.floor(q + 1e-9))
+        rem = round(q - full, 6)
+        if abs(rem) < 1e-5:
+            rem = 0.0
+
+        def wb(n):
+            return 'bulto' if n == 1 else 'bultos'
+
+        if full == 0 and rem == 0:
+            return '-'
+        if rem == 0:
+            return f'{full} {wb(full)} ({label})'
+        rs = self._pretty_qty_for_display(rem)
+        return f'{full} {wb(full)} + {rs} {label}'
+
+    def _format_total_display_for_line(self, line):
+        """
+        Texto para columna TOTAL: bultos enteros + unidades sueltas, sin '0.17 bulto'.
+        Ej.: 30 uds, bulto x20 -> '1 bulto + 10 Unidades (x20)'.
+        """
+        if not isinstance(line, dict):
+            try:
+                line = dict(line)
+            except (TypeError, ValueError, AttributeError):
+                return '-'
+        product = line.get('product')
+        uom_name = (line.get('uom_name') or '').strip() or 'unidades'
+        bulto_label = (line.get('bulto_name') or '').strip()
+        qty_line = float(line.get('quantity') or 0)
+
+        if qty_line <= 0:
+            return '-'
+
+        upb = float(line.get('units_per_bulto') or 0)
+        qty_units = qty_line
+
+        if line.get('qty_already_in_bultos'):
+            upb_pkg = self._product_units_per_bulto_package(product)
+            if upb_pkg > 0:
+                qty_units = qty_line * upb_pkg
+                upb = upb_pkg
+            else:
+                return self._format_bulto_uom_display(qty_line, bulto_label)
+
+        if upb <= 0 and product:
+            upb = float(self._product_units_per_bulto_package(product) or 0)
+
+        if upb <= 0:
+            # Sin embalaje/UdM de bulto en ficha: el operario igual necesita ver qué llevarse
+            return f'{self._pretty_qty_for_display(qty_line)} {uom_name}'
+
+        full = int(math.floor(qty_units / upb + 1e-9))
+        remainder = qty_units - full * upb
+        remainder = round(remainder, 6)
+        if abs(remainder) < 1e-5:
+            remainder = 0.0
+
+        x_hint = ''
+        if abs(upb - int(upb)) < 1e-6:
+            x_hint = f' (x{int(upb)})'
+        else:
+            x_hint = f' (x{self._pretty_qty_for_display(upb)})'
+
+        def wb(n):
+            return 'bulto' if n == 1 else 'bultos'
+
+        if full == 0:
+            if remainder == 0:
+                return '-'
+            u_part = self._pretty_qty_for_display(remainder)
+            return f'0 bultos + {u_part} {uom_name}{x_hint}'
+
+        if remainder == 0:
+            return f'{full} {wb(full)}{x_hint}'
+
+        u_part = self._pretty_qty_for_display(remainder)
+        return f'{full} {wb(full)} + {u_part} {uom_name}{x_hint}'
 
     def _get_consolidated_lines(self):
         """
@@ -65,6 +240,7 @@ class StockPickingBatch(models.Model):
                         'location_dest_id': move.location_dest_id,
                         'quantity': move.product_uom_qty,
                         'product_uom_id': move.product_uom,
+                        'product_packaging_id': getattr(move, 'product_packaging_id', None),
                     })()
                     lines_to_process.append(pseudo)
 
@@ -108,6 +284,14 @@ class StockPickingBatch(models.Model):
                                 units_per_bulto = 1  # Para que bulto_qty = quantity en post-proc
                         except Exception:
                             pass
+                        # Embalaje explícito en la línea de movimiento (Odoo estándar)
+                        if not bulto_name:
+                            pkg_line = getattr(move_line, 'product_packaging_id', None)
+                            if pkg_line:
+                                pq = pkg_line.qty or 0
+                                if pq > 0:
+                                    bulto_name = pkg_line.name or ('x %.0f' % pq)
+                                    units_per_bulto = float(pq)
                         # Si no: buscar uom_po_id (UdM compra, ej. "Bulto x40")
                         if not bulto_name and pt.uom_po_id and pt.uom_po_id != pt.uom_id:
                             try:
@@ -126,19 +310,16 @@ class StockPickingBatch(models.Model):
                                     units_per_bulto = uom_factor
                             except Exception:
                                 pass
-                        # Fallback: packaging (ej. "Caja x 12")
-                        if not bulto_name and pt.packaging_ids:
-                            pkg = pt.packaging_ids[0]
-                            units_per_bulto = pkg.qty or 0
-                            if units_per_bulto > 0:
-                                bulto_name = pkg.name or ('x %.0f' % units_per_bulto)
+                        # Fallback: embalajes (variante primero; plantilla sola falla con >1 variante en Odoo 18)
+                        if not bulto_name:
+                            pq, pkg = self._best_packaging_for_product(product)
+                            if pq > 0:
+                                units_per_bulto = pq
+                                bulto_name = (pkg.name if pkg else '') or ('x %.0f' % pq)
                         # Fallback: buscar UdM tipo bulto en la categoría del producto
                         if not bulto_name and pt.uom_id and pt.uom_id.category_id:
                             try:
-                                bulto_uom_cat = self.env['uom.uom'].search([
-                                    ('category_id', '=', pt.uom_id.category_id.id),
-                                    ('factor_inv', '>', 1)
-                                ], order='factor_inv desc', limit=1)
+                                bulto_uom_cat = self._uom_largest_bulto_in_category(pt.uom_id.category_id)
                                 if bulto_uom_cat:
                                     bulto_name = bulto_uom_cat.name or ''
                                     units_per_bulto = bulto_uom_cat.factor_inv or 0
@@ -201,6 +382,11 @@ class StockPickingBatch(models.Model):
                     line['bulto_qty'] = round(qty / units_per_bulto, 2)
                 else:
                     line['bulto_qty'] = 0.0
+            td = self._format_total_display_for_line(line)
+            qty = float(line.get('quantity') or 0)
+            if qty > 0 and td == '-':
+                td = f'{self._pretty_qty_for_display(qty)} {line.get("uom_name") or "unidades"}'
+            line['total_display'] = td
 
         return result
 

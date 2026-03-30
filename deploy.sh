@@ -13,6 +13,7 @@ MODULE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REMOTE_ADDONS="/usr/lib/python3/dist-packages/odoo/addons/nakel_picking"
 
 echo "📦 Desplegando nakel_picking a $HOST..."
+echo "   (rsync incluye models/*.py y reports/*.xml; si solo subís el XML, el PDF fallará o verá lógica vieja.)"
 echo ""
 
 # 1. Sincronizar archivos a /tmp en el servidor
