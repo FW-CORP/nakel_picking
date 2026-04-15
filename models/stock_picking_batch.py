@@ -5,10 +5,292 @@ from collections import defaultdict
 import base64
 import io
 import math
+import re
 
 
 class StockPickingBatch(models.Model):
     _inherit = 'stock.picking.batch'
+
+    def _extract_sale_name_from_origin(self, origin):
+        """
+        Intenta extraer el nombre de la SO desde `origin`.
+        Ej.: 'S02331' o 'S02331 - Nakel SA' -> 'S02331'
+        """
+        origin = (origin or '').strip()
+        if not origin:
+            return ''
+        m = re.search(r'\bS\d+\b', origin, flags=re.IGNORECASE)
+        if m:
+            return m.group(0).upper()
+        # fallback: primer token
+        return origin.split()[0].strip()
+
+    def _picking_short_number(self, picking_name):
+        """
+        Devuelve un "número corto" para el picking.
+        Ej.: 'WH/OUT/000123' -> '123', 'PICK/0456' -> '456'.
+        """
+        name = (picking_name or '').strip()
+        if not name:
+            return ''
+        m = re.search(r'(\d+)(?!.*\d)', name)
+        if not m:
+            return name
+        return str(int(m.group(1)))
+
+    def _get_valuation_lines(self):
+        """
+        Arma líneas para sección VALORACIÓN:
+        Picking -> Factura -> Monto.
+
+        Estrategia:
+        - Si existe `picking.sale_id`, usarlo.
+        - Si no, intentar por `picking.origin` (nombre de SO).
+        - Facturas desde `sale.invoice_ids` (out_invoice/out_refund), excluye canceladas.
+        - Si no hay sale/invoices, devuelve vacío sin romper.
+        """
+        self.ensure_one()
+
+        # Entornos donde sale/account no están instalados: no romper el PDF
+        try:
+            Sale = self.env['sale.order']
+            Move = self.env['account.move']
+        except KeyError:
+            return []
+
+        lines = []
+        for picking in self.picking_ids:
+            sale = None
+            try:
+                sale = getattr(picking, 'sale_id', False) or False
+            except Exception:
+                sale = False
+
+            # Fallback 0: derivar SO desde las líneas de venta de los movimientos (más confiable que origin)
+            if not sale:
+                try:
+                    so_from_moves = picking.move_ids.mapped('sale_line_id').mapped('order_id')
+                    sale = so_from_moves[:1] if so_from_moves else False
+                except Exception:
+                    sale = False
+
+            if not sale and getattr(picking, 'origin', False):
+                so_name = self._extract_sale_name_from_origin(picking.origin)
+                if so_name:
+                    sale = Sale.search([('name', '=', so_name)], limit=1)
+                if not sale:
+                    # fallback laxo: por si el origin trae variantes/espacios
+                    sale = Sale.search([('name', 'ilike', so_name or picking.origin)], limit=1)
+
+            invoices = self.env['account.move']
+
+            # 1) Mejor caso: sale.order.invoice_ids
+            if sale:
+                invoices = sale.invoice_ids
+
+            # 2) Fallback robusto: desde líneas de venta de los movimientos del picking
+            #    stock.move.sale_line_id -> sale.order.line -> invoice_lines -> account.move
+            if not invoices:
+                sale_lines = picking.move_ids.mapped('sale_line_id')
+                if sale_lines:
+                    inv_lines = sale_lines.mapped('invoice_lines')
+                    invoices = inv_lines.mapped('move_id')
+
+            # 3) Fallback: buscar por invoice_origin / refs (SO o picking)
+            if not invoices:
+                origins = []
+                if sale and sale.name:
+                    origins.append(sale.name)
+                if getattr(picking, 'origin', False):
+                    origins.append(self._extract_sale_name_from_origin(picking.origin) or picking.origin)
+                if picking.name:
+                    origins.append(picking.name)
+                for origin in origins:
+                    invoices |= Move.search([
+                        ('state', '!=', 'cancel'),
+                        ('move_type', 'in', ('out_invoice', 'out_refund')),
+                        '|', '|',
+                        ('invoice_origin', '=', origin),
+                        ('invoice_origin', 'ilike', origin),
+                        ('ref', 'ilike', origin),
+                    ])
+
+            invoices = invoices.filtered(lambda m: m.state != 'cancel' and m.move_type in ('out_invoice', 'out_refund'))
+            invoices = invoices.sorted(lambda m: (m.invoice_date or m.date or fields.Date.today(), m.id)) if invoices else self.env['account.move']
+
+            # Datos base para cobranza (transportista): preferimos SO si existe
+            partner_name = ''
+            sale_total = 0.0
+            sale_currency = None
+            payment_term_label = ''
+            if sale:
+                try:
+                    partner_name = sale.partner_shipping_id.display_name or sale.partner_id.display_name or ''
+                except Exception:
+                    partner_name = sale.partner_id.display_name if sale.partner_id else ''
+                sale_total = float(getattr(sale, 'amount_total', 0.0) or 0.0)
+                sale_currency = getattr(sale, 'currency_id', None)
+                try:
+                    payment_term_label = (sale.payment_term_id.name or '').strip() if sale.payment_term_id else ''
+                except Exception:
+                    payment_term_label = ''
+            else:
+                # fallback: partner del picking (por si no hay SO)
+                try:
+                    partner_name = (picking.partner_id.display_name if picking.partner_id else '') or ''
+                except Exception:
+                    partner_name = ''
+
+            origin_raw = ''
+            try:
+                origin_raw = getattr(picking, 'origin', '') or ''
+            except Exception:
+                origin_raw = ''
+            so_name_from_origin = self._extract_sale_name_from_origin(origin_raw) if origin_raw else ''
+            sale_name_display = sale.name if sale else (so_name_from_origin or origin_raw)
+
+            # Si no hay facturas, igual devolvemos una línea por picking (muestra SO/origen)
+            if not invoices:
+                lines.append({
+                    'picking': picking,
+                    'picking_short': self._picking_short_number(picking.name),
+                    'sale_name': sale_name_display,
+                    'partner_name': partner_name,
+                    'sale_total': sale_total,
+                    'sale_currency': sale_currency,
+                    'payment_term': payment_term_label,
+                    'origin_raw': origin_raw,
+                    'invoice': False,
+                    'invoice_name': '',
+                    'amount_total': 0.0,
+                    'currency': (sale.currency_id if sale else None),
+                    'has_invoice': False,
+                })
+                continue
+
+            for inv in invoices:
+                currency = inv.currency_id or (sale.currency_id if sale else None)
+                amount = inv.amount_total
+                # En devoluciones, suele ser útil ver el signo real
+                try:
+                    amount = inv.amount_total_signed if inv.move_type == 'out_refund' else inv.amount_total
+                except Exception:
+                    pass
+                lines.append({
+                    'picking': picking,
+                    'picking_short': self._picking_short_number(picking.name),
+                    'sale_name': sale_name_display,
+                    'partner_name': partner_name,
+                    'sale_total': sale_total,
+                    'sale_currency': sale_currency,
+                    'payment_term': payment_term_label,
+                    'origin_raw': origin_raw,
+                    'invoice': inv,
+                    'invoice_name': inv.name or inv.payment_reference or inv.ref or '',
+                    'amount_total': amount,
+                    'currency': currency,
+                    'has_invoice': True,
+                })
+
+        # Orden: por picking (número), luego por factura
+        def _key(x):
+            return (x.get('picking_short') or '', x.get('invoice_name') or '')
+        return sorted(lines, key=_key)
+
+    def _get_cobranza_data(self):
+        """
+        Datos para el "RESUMEN DE COBRANZA" del transportista.
+
+        Devuelve:
+          {
+            'lines': [ ... ],          # líneas por picking + factura (si existe)
+            'totals': {
+                'sale_total': float,    # suma de SO únicas
+                'inv_total': float,     # suma facturas (out_invoice)
+                'refund_total': float,  # suma notas de crédito (out_refund, valores negativos)
+                'net_total': float,     # inv_total + refund_total
+                'currency': res.currency,
+            },
+            'by_term': [
+                {'label': 'CONTADO', 'amount': 123.0, 'currency': ...},
+                {'label': '15 días', 'amount': 456.0, 'currency': ...},
+                ...
+            ]
+          }
+        """
+        self.ensure_one()
+
+        lines = self._get_valuation_lines()
+
+        # Sumar SO únicas (evita duplicar cuando hay múltiples facturas por picking)
+        sale_seen = set()
+        sale_total_sum = 0.0
+        currency = None
+        term_buckets = {}  # label -> amount
+
+        for l in lines:
+            sale_name = (l.get('sale_name') or '').strip()
+            if sale_name and sale_name not in sale_seen:
+                sale_seen.add(sale_name)
+                sale_total_sum += float(l.get('sale_total') or 0.0)
+                currency = currency or l.get('sale_currency') or l.get('currency')
+
+                # Plazo de pago: si tenemos sale, usamos payment_term_id; si no, caemos a CONTADO
+                label = 'CONTADO'
+                try:
+                    picking = l.get('picking')
+                    sale = getattr(picking, 'sale_id', False) or False
+                    if not sale and getattr(picking, 'origin', False):
+                        so_name = self._extract_sale_name_from_origin(picking.origin)
+                        if so_name:
+                            sale = self.env['sale.order'].search([('name', '=', so_name)], limit=1)
+                    if sale and getattr(sale, 'payment_term_id', False):
+                        pt = sale.payment_term_id
+                        # Preferimos el nombre del término (ej. "15 días", "30 días", "Contado", etc.)
+                        if getattr(pt, 'name', False):
+                            label = pt.name
+                        days = 0
+                        try:
+                            days = max(pt.line_ids.mapped('days') or [0])
+                        except Exception:
+                            days = 0
+                        # Si no hay nombre usable, caemos a días máximos
+                        if not label or label == 'CONTADO':
+                            if days and days > 0:
+                                label = f'{days} días'
+                            else:
+                                label = 'CONTADO'
+                except Exception:
+                    label = 'CONTADO'
+
+                term_buckets[label] = term_buckets.get(label, 0.0) + float(l.get('sale_total') or 0.0)
+
+        inv_total = 0.0
+        refund_total = 0.0
+        for l in lines:
+            inv = l.get('invoice')
+            if not inv:
+                continue
+            # inv es recordset en servidor; si viniera como False no entra.
+            try:
+                mt = inv.move_type
+            except Exception:
+                mt = ''
+            amt = float(l.get('amount_total') or 0.0)
+            if mt == 'out_refund':
+                refund_total += amt  # suele venir negativo (signed)
+            else:
+                inv_total += amt
+
+        by_term = [{'label': k, 'amount': v, 'currency': currency} for k, v in sorted(term_buckets.items(), key=lambda kv: kv[0])]
+        totals = {
+            'sale_total': sale_total_sum,
+            'inv_total': inv_total,
+            'refund_total': refund_total,
+            'net_total': inv_total + refund_total,
+            'currency': currency,
+        }
+        return {'lines': lines, 'totals': totals, 'by_term': by_term}
 
     def _pretty_qty_for_display(self, n):
         """Cantidad legible: entero sin .0; si no, hasta 4 decimales sin ceros finales."""
@@ -201,6 +483,8 @@ class StockPickingBatch(models.Model):
             'product': None,
             'product_name': '',
             'product_code': '',
+            'categ_id': None,
+            'categ_name': '',
             'lot': None,
             'lot_name': '',
             'package': None,
@@ -245,8 +529,10 @@ class StockPickingBatch(models.Model):
                     lines_to_process.append(pseudo)
 
             for move_line in lines_to_process:
-                # Skip lines without quantity
-                if not move_line.quantity:
+                # NO ignorar quantity=0: si una ola/lote tiene faltante de stock,
+                # queremos que la línea figure en el PDF para hacer visible el problema.
+                # (Antes: quantity=0 hacía que el producto "desaparezca" del consolidado.)
+                if move_line.quantity is None:
                     continue
 
                 # Create the grouping key
@@ -262,6 +548,13 @@ class StockPickingBatch(models.Model):
                 if consolidated[key]['product'] is None:
                     product = move_line.product_id
                     line_uom = move_line.product_uom_id
+                    categ = product.categ_id if product else None
+                    categ_name = ''
+                    try:
+                        # complete_name suele ser más útil (Jerarquía: "Almacén / Bebidas / Gaseosas")
+                        categ_name = (categ.complete_name or categ.display_name or categ.name) if categ else ''
+                    except Exception:
+                        categ_name = (categ.display_name or categ.name) if categ else ''
                     # Calcular bultos: cantidad en UdM de bulto (ej. "Bulto x40") para que el recolector
                     # sepa cuántas cajas/bultos cerrados tomar sin contar unidades sueltas
                     bulto_name = ''
@@ -330,6 +623,8 @@ class StockPickingBatch(models.Model):
                         'product': product,
                         'product_name': product.display_name,
                         'product_code': product.default_code or '',
+                        'categ_id': categ,
+                        'categ_name': categ_name or '',
                         'lot': move_line.lot_id,
                         'lot_name': move_line.lot_id.name if move_line.lot_id else '',
                         'package': move_line.package_id,
@@ -361,10 +656,11 @@ class StockPickingBatch(models.Model):
         result = sorted(
             consolidated.values(),
             key=lambda x: (
+                x['location_name'],
+                x['location_dest_name'],
+                (x.get('categ_name') or ''),
                 x['product_name'],
                 x['lot_name'],
-                x['location_name'],
-                x['location_dest_name']
             )
         )
         for line in result:
@@ -372,6 +668,7 @@ class StockPickingBatch(models.Model):
             line.setdefault('bulto_qty', 0.0)
             line.setdefault('units_per_bulto', 0.0)
             line.setdefault('qty_already_in_bultos', False)
+            line.setdefault('categ_name', '')
             # Calcular cuántos bultos representa la cantidad (para el recolector)
             qty = line.get('quantity', 0)
             if line.get('qty_already_in_bultos'):
@@ -408,7 +705,8 @@ class StockPickingBatch(models.Model):
 
         for picking in self.picking_ids:
             for move_line in picking.move_line_ids:
-                if not move_line.quantity:
+                # Ver comentario en _get_consolidated_lines(): mantener líneas con quantity=0
+                if move_line.quantity is None:
                     continue
 
                 key = move_line.product_id.id
