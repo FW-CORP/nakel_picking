@@ -483,6 +483,8 @@ class StockPickingBatch(models.Model):
             'product': None,
             'product_name': '',
             'product_code': '',
+            # PLU para picking / escáner: EAN en `barcode` (en Nakel `default_code` es ref. interna)
+            'product_plu': '',
             'categ_id': None,
             'categ_name': '',
             'lot': None,
@@ -619,10 +621,13 @@ class StockPickingBatch(models.Model):
                             except Exception:
                                 pass
 
+                    _bar = (getattr(product, 'barcode', None) or '').strip()
+                    _ref = (product.default_code or '').strip()
                     consolidated[key].update({
                         'product': product,
                         'product_name': product.display_name,
                         'product_code': product.default_code or '',
+                        'product_plu': _bar or _ref,
                         'categ_id': categ,
                         'categ_name': categ_name or '',
                         'lot': move_line.lot_id,
@@ -669,6 +674,11 @@ class StockPickingBatch(models.Model):
             line.setdefault('units_per_bulto', 0.0)
             line.setdefault('qty_already_in_bultos', False)
             line.setdefault('categ_name', '')
+            if not line.get('product_plu') and line.get('product'):
+                p = line['product']
+                line['product_plu'] = (
+                    (getattr(p, 'barcode', None) or '').strip() or (p.default_code or '').strip()
+                )
             # Calcular cuántos bultos representa la cantidad (para el recolector)
             qty = line.get('quantity', 0)
             if line.get('qty_already_in_bultos'):
@@ -698,6 +708,7 @@ class StockPickingBatch(models.Model):
             'product': None,
             'product_name': '',
             'product_code': '',
+            'product_plu': '',
             'quantity': 0.0,
             'uom': None,
             'uom_name': '',
@@ -712,10 +723,14 @@ class StockPickingBatch(models.Model):
                 key = move_line.product_id.id
 
                 if consolidated[key]['product'] is None:
+                    p = move_line.product_id
+                    _b = (getattr(p, 'barcode', None) or '').strip()
+                    _r = (p.default_code or '').strip()
                     consolidated[key].update({
-                        'product': move_line.product_id,
-                        'product_name': move_line.product_id.display_name,
-                        'product_code': move_line.product_id.default_code or '',
+                        'product': p,
+                        'product_name': p.display_name,
+                        'product_code': p.default_code or '',
+                        'product_plu': _b or _r,
                         'uom': move_line.product_uom_id,
                         'uom_name': move_line.product_uom_id.name,
                     })

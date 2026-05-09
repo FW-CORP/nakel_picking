@@ -6,6 +6,47 @@ El formato está basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1
 
 ---
 
+## [18.0.1.18.5] - 2026-04-22
+
+### Cambiado
+
+- **Columna PLU (productos consolidados):** se muestra **imagen Code128** generada con `_generate_barcode_image` (valor `product_plu`, típicamente EAN en `barcode`) para escaneo con picker; **no** se añade código de barras en el pie de página (el pie sigue solo con texto Wave + paginación).
+
+---
+
+## [18.0.1.18.4] - 2026-04-22
+
+### Cambiado
+
+- **PLU en PDF (productos consolidados):** el valor mostrado pasa a **`product.barcode`** (EAN / código escaneable). En `master_dev`, la referencia interna (`default_code`, p. ej. `472.00`) **no coincide** con el EAN; Nakel usa `default_code` como código interno. Si no hay `barcode`, se usa **`default_code`** como respaldo. Clave nueva en el dict del reporte: `product_plu` (además se mantiene `product_code` = ref. interna).
+
+---
+
+## [18.0.1.18.3] - 2026-04-22
+
+### Cambiado
+
+- **Productos consolidados (PDF):** la columna que mostraba los nombres de picking en **Trasladar** pasa a **PLU** (tipografía **16 pt en negrita**). En **18.0.1.18.3** se usaba por error `default_code`; corregido en **18.0.1.18.4** a `barcode` con fallback.
+
+---
+
+## [18.0.1.18.2] - 2026-04-22
+
+### Añadido
+
+- **PDF del lote:** en el pie de cada hoja se muestra la **referencia de la wave** (`batch.name`, p. ej. `WAVE/00077`) junto a **Página n/m**, para identificar el lote si se mezclan impresiones.
+
+---
+
+## [18.0.1.18.1] - 2026-04-01
+
+### Corregido
+
+- **PDF del lote (ola / wave):** wkhtmltopdf/WebKit suele **ignorar** `page-break-inside: avoid` en filas (`tr`) de una tabla grande. Las secciones **Traslados en el Lote** y **Productos consolidados** pasan a usar **una tabla HTML por fila de datos** con `page-break-inside: avoid` en esa tabla, de modo que la fila (texto + código de barras) salta entera a la página siguiente si no cabe.
+- **Secciones por ruta:** se quitó `page-break-inside: avoid` del contenedor que envolvía cabecera + tabla completa (con muchas filas forzaba saltos raros); la barra gris de ruta usa `page-break-after: avoid` para reducir cabeceras huérfanas.
+
+---
+
 ## [18.0.1.18.0] - 2026-03-30
 
 ### Corregido

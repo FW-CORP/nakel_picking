@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Nakel Picking - Consolidated Batch Report',
-    'version': '18.0.1.18.0',
+    'version': '18.0.1.18.5',
     'category': 'Inventory/Inventory',
     'summary': 'Consolidated quantities in batch picking reports',
     'description': """
@@ -27,6 +27,7 @@
     ],
     'data': [
         'reports/stock_picking_batch_report.xml',
+        'reports/paperformat.xml',
     ],
     'installable': True,
     'application': False,

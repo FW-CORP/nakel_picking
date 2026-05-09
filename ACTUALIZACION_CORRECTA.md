@@ -31,6 +31,14 @@ sudo -u odoo odoo -c /etc/odoo/odoo.conf -u nakel_picking -d master_18 --stop-af
 sudo systemctl start odoo
 ```
 
+### Nota DEV (dev.nakel.net.ar)
+
+En **DEV** la base de datos usada es **`master_test`** (copia nueva). Al actualizar, usar `-d master_test`:
+
+```bash
+sudo -u odoo odoo -c /etc/odoo/odoo.conf -u nakel_picking -d master_test --stop-after-init
+```
+
 **Importante:** El paso 3 debe usar `-c /etc/odoo/odoo.conf` para que Odoo tenga las credenciales de PostgreSQL. Sin eso puede fallar con `fe_sendauth: no password supplied`.
 
 ---
@@ -44,6 +52,33 @@ cd /ruta/al/nakel_picking   # ej. vault: nakel/nakel_picking (raíz del addon, d
 
 # 2. Actualizar en el servidor (todo en uno)
 ssh -t odoo-ct-nakel "sudo systemctl stop odoo && sudo -u odoo odoo -c /etc/odoo/odoo.conf -u nakel_picking -d master_18 --stop-after-init && sudo systemctl start odoo"
+```
+
+### Usar credenciales SSH desde `.env` (recomendado)
+
+En el vault, podés centralizar el acceso SSH al LXC de `env.nakel.net.ar` en:
+
+- `/media/klap/raid5/cursor_files/nakel/.env`
+
+Variables sugeridas:
+
+- `NAKEL_ENV_SSH_HOST`
+- `NAKEL_ENV_SSH_USER`
+- `NAKEL_ENV_SSH_PORT`
+- `NAKEL_ENV_SSH_KEY_PATH`
+
+Cargar variables en tu shell:
+
+```bash
+set -a
+source /media/klap/raid5/cursor_files/nakel/.env
+set +a
+```
+
+Ejemplo de conexión:
+
+```bash
+ssh -i "$NAKEL_ENV_SSH_KEY_PATH" -p "$NAKEL_ENV_SSH_PORT" "$NAKEL_ENV_SSH_USER@$NAKEL_ENV_SSH_HOST"
 ```
 
 ---

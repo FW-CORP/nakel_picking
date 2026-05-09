@@ -110,3 +110,69 @@ sudo -u odoo odoo -c /etc/odoo/odoo.conf -u nakel_picking -d master_18 --stop-af
    sudo -u odoo odoo -c /etc/odoo/odoo.conf -u nakel_picking -d master_18 --stop-after-init
    ```
 3. O desde la interfaz: Aplicaciones → Nakel Picking → Actualizar
+
+---
+
+## 5. Olas/lotes muy grandes (PDF 1000+ páginas): posibles causas y mitigaciones
+
+### Observación
+
+En olas extremadamente grandes (por ejemplo, reportes de **1500 páginas**), pueden aparecer **diferencias entre el “digital” (preview/descarga desde Odoo) y el resultado impreso**: páginas incompletas, saltos raros o elementos que “no salen” al imprimir.
+
+### Lo que hace este módulo (y lo que NO hace)
+
+- **Consolidación (Python)**: `_get_consolidated_lines()` recorre movimientos del batch y **acumula** cantidades. La salida se **ordena** antes de pasar a QWeb.
+- **Render (QWeb → HTML → PDF)**: el template genera **mucho HTML** (y muchos `<img>` base64) y luego Odoo lo convierte a PDF con **wkhtmltopdf**.
+- **Importante**: si hay diferencias “a veces sí / a veces no” en olas enormes, suele ser más consistente con **limitaciones de wkhtmltopdf / recursos / impresión**, no con lógica de consolidación (que es determinista).
+
+### Causas probables (ordenadas por frecuencia/impacto)
+
+1. **wkhtmltopdf bajo estrés (memoria/tiempo)**:
+   - HTML gigante + muchas imágenes base64 → alto consumo de RAM/CPU.
+   - En algunos escenarios, wkhtmltopdf puede **fallar o truncar** el resultado (a veces sin un error “claro” en UI).
+
+2. **Workers/timeouts de Odoo**:
+   - Renderizar 1000+ páginas puede exceder límites de tiempo o memoria del worker.
+   - Si el worker se recicla/reinicia, el PDF puede salir incompleto o la descarga puede ser inconsistente.
+
+3. **Entorno de impresión (spooler/driver/viewer)**:
+   - Un PDF enorme puede “imprimirse distinto” según visor (Chrome, Evince, Acrobat) y driver.
+   - El preview digital puede verse bien, pero el spool de impresión puede cortar/rasterizar distinto bajo carga.
+
+4. **wkhtmltopdf “unpatched qt”**:
+   - No suele “saltar líneas”, pero sí rompe header/footer y paginación; además es señal de un entorno PDF no soportado por Odoo.
+   - Ver `upgradewkhtmltopdf.md`.
+
+### Verificaciones rápidas recomendadas (para confirmar hipótesis)
+
+- **A. Confirmar integridad del PDF**: descargar el PDF, verificar cantidad de páginas y revisar si el “faltante” ya está en el archivo (antes de imprimir).
+- **B. Probar distintos visores**: imprimir el mismo PDF desde 2 visores distintos (por ejemplo, Chrome vs Evince/Acrobat) y comparar.
+- **C. Revisar logs al generar el PDF**: buscar warnings/errores de wkhtmltopdf o tiempos excesivos durante el render.
+
+### Mitigación recomendada (mejor relación riesgo/beneficio): “chunking” (imprimir por partes)
+
+La estrategia más robusta es **no generar un único PDF monstruoso**:
+
+- **Imprimir por lotes internos**: dividir `picking_ids` del batch en “chunks” (ej. 50/100/200 pickings o un objetivo de ~200 páginas por PDF).
+- **Generar varios PDFs** (Parte 1/N, Parte 2/N, …) y:
+  - descargarlos por separado, o
+  - opcionalmente **unirlos** en servidor (si se decide incorporar un merge, con librería tipo pypdf).
+
+Ventajas:
+- baja el pico de RAM/CPU por render
+- reduce probabilidad de timeouts/reciclado de workers
+- reduce problemas de spool/driver al imprimir
+- hace más fácil reimprimir solo una parte si falla
+
+Trade-offs:
+- si el “Productos Consolidados” debe ser global, hay que decidir:
+  - **Consolidado global solo en el primer PDF** (y el resto solo “Traslados”), o
+  - **Consolidado por chunk** (útil operativamente si se recolecta por partes), o
+  - **Un PDF “Consolidado” separado** + PDFs de “Traslados” por chunk.
+
+### Mitigaciones adicionales (complementarias)
+
+- Reducir peso del HTML/PDF:
+  - evitar generar códigos de barras repetidos si no agregan valor operativo para olas gigantes
+  - cachear/rehusar imágenes de barcode (si se repiten valores)
+- Asegurar wkhtmltopdf con **patched Qt** y revisar `report.url` (assets).

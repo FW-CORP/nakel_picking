@@ -37,7 +37,12 @@ pip install python-barcode[images]
 | Sección | Descripción |
 |--------|-------------|
 | **Página 1** | Logo, nombre empresa, resumen del lote, tabla de traslados con códigos de barras |
-| **Página 2+** | Productos consolidados por ruta: Producto, Cantidad, Trasladar, Codigo Prod., BULTO |
+| **Página 2+** | Productos consolidados por ruta: Producto, Cantidad, **PLU** (imagen **Code128** del EAN/`barcode` o fallback `default_code`, escaneable), TOTAL (ordenado por categoría) |
+
+Notas:
+- La columna **Código de barras de producto** fue removida (no aportaba valor en picking).
+- En el **pie** aparecen la **referencia de la wave** (`batch.name`, p. ej. `WAVE/00077`) y la **paginación** `Página X/Y` (flex: wave a la izquierda, página a la derecha).
+- Se redujo el **margen superior** para aprovechar mejor la hoja.
 
 ### Columna BULTO
 

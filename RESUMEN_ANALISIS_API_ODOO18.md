@@ -85,8 +85,12 @@
 
 ```bash
 cd inventario/nakel_picking
-python3 analizar_odoo18_api.py dev   # dev.nakel.net.ar / master_dev
-python3 analizar_odoo18_api.py prod  # nakel.net.ar / master_18
+python3 analizar_odoo18_api.py dev --batch-id 45    # dev.nakel.net.ar / master_test
+python3 analizar_odoo18_api.py prod --batch-id 45   # nakel.net.ar / master_18 (según .env)
 ```
 
-Editar `CONFIG` en el script para cambiar URL, db, usuario o contraseña.
+Las credenciales se leen desde el `.env` del vault:
+
+- `/media/klap/raid5/cursor_files/nakel/.env`
+
+Usa variables `ODOO_MASTER_DEV_*` (dev) y `ODOO_MASTER18_*` (prod).
